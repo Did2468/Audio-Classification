@@ -1,30 +1,3 @@
-"""
-5_train.py
------------
-VQC Training — manual implementation.
-
-Architecture:
-    angle encoding  (Ry on each qubit)
-    +  3 learnable layers  (Rot on each qubit + ring CNOT)
-    +  measurement  (PauliZ on q0 and q1)
-
-Gradient:
-    parameter shift rule — exact quantum gradient
-    no backprop, no approximation
-
-Run:
-    python src/5_train.py
-
-Inputs:  quantum_ready/X_train.npy  (959, 8)
-         quantum_ready/X_test.npy   (240, 8)
-         quantum_ready/y_train.npy
-         quantum_ready/y_test.npy
-         quantum_ready/label_names.npy
-
-Outputs: trained_params.npy
-         training_log.txt
-"""
-
 import numpy as np
 import pennylane as qml
 from sklearn.metrics import classification_report, confusion_matrix
@@ -33,15 +6,16 @@ import time
 # ── CONFIG ───────────────────────────────────
 N_QUBITS    = 8
 N_LAYERS    = 3
-N_EPOCHS    = 25
+N_EPOCHS    = 80
 LR          = 0.01
 BATCH_SIZE  = 32
 RANDOM_SEED = 42
 VECTOR_DIR  = "./quantum_ready"
+# ─────────────────────────────────────────────
 
 np.random.seed(RANDOM_SEED)
 
-# LOAD
+# ── LOAD ─────────────────────────────────────
 X_train     = np.load(f"{VECTOR_DIR}/X_train.npy")
 X_test      = np.load(f"{VECTOR_DIR}/X_test.npy")
 y_train     = np.load(f"{VECTOR_DIR}/y_train.npy")
@@ -58,18 +32,35 @@ print(f"  Layers : {N_LAYERS}")
 print(f"  Params : {N_LAYERS * N_QUBITS * 3}")
 print(f"  Epochs : {N_EPOCHS}  |  LR: {LR}  |  Batch: {BATCH_SIZE}")
 
-# DEVICE 
+# ── DEVICE ───────────────────────────────────
 dev = qml.device("default.qubit", wires=N_QUBITS)
 
 
+# ─────────────────────────────────────────────
 # CIRCUIT
+# ─────────────────────────────────────────────
 
 def angle_encoding(x):
+    """
+    Load 8-dim vector into 8 qubits.
+    Ry(x[i]) rotates qubit i by angle x[i].
+    Fixed — no learnable parameters here.
+    """
     for i in range(N_QUBITS):
         qml.RY(x[i], wires=i)
 
 
 def learnable_layers(params):
+    """
+    3 learnable layers. Each layer:
+      Step 1 — Rot(phi, theta, omega) on every qubit
+               3 learnable angles per qubit, can point anywhere on Bloch sphere
+      Step 2 — ring CNOT entanglement
+               q0->q1->q2->...->q7->q0
+               mixes information across all qubits
+
+    params shape: (N_LAYERS, N_QUBITS, 3)
+    """
     for layer in range(N_LAYERS):
         for qubit in range(N_QUBITS):
             qml.Rot(
@@ -84,12 +75,26 @@ def learnable_layers(params):
 
 @qml.qnode(dev)
 def vqc(x, params):
+    """
+    Full circuit:
+        angle encoding  ->  learnable layers  ->  measure
+
+    Returns PauliZ expectation on q0 and q1.
+    Sign combination maps to 4 classes:
+        (+, +) -> car_clean      (class 0)
+        (+, -) -> car_knocking   (class 1)
+        (-, +) -> truck_clean    (class 2)
+        (-, -) -> truck_knocking (class 3)
+    """
     angle_encoding(x)
     learnable_layers(params)
     return [qml.expval(qml.PauliZ(0)),
             qml.expval(qml.PauliZ(1))]
 
+
+# ─────────────────────────────────────────────
 # PREDICTION
+# ─────────────────────────────────────────────
 
 def predict_one(x, params):
     z0, z1 = vqc(x, params)
@@ -107,7 +112,10 @@ def accuracy(X, y, params):
     return (preds == y).mean()
 
 
+# ─────────────────────────────────────────────
 # LOSS
+# ─────────────────────────────────────────────
+
 def softmax(logits):
     e = np.exp(logits - logits.max())
     return e / e.sum()
@@ -138,7 +146,10 @@ def batch_loss(X_batch, y_batch, params):
     return np.mean([loss_one(x, int(y), params)
                     for x, y in zip(X_batch, y_batch)])
 
+
+# ─────────────────────────────────────────────
 # PARAMETER SHIFT GRADIENT
+# ─────────────────────────────────────────────
 
 def compute_gradient(X_batch, y_batch, params):
     """
@@ -161,7 +172,10 @@ def compute_gradient(X_batch, y_batch, params):
                         batch_loss(X_batch, y_batch, p_minus)) / 2
     return grad
 
+
+# ─────────────────────────────────────────────
 # TRAINING LOOP
+# ─────────────────────────────────────────────
 
 def train(params):
     n         = len(X_train)
@@ -204,7 +218,9 @@ def train(params):
     return params, log_lines
 
 
+# ─────────────────────────────────────────────
 # EVALUATION
+# ─────────────────────────────────────────────
 
 def evaluate(params):
     print(f"\n{'=' * 52}")
@@ -231,7 +247,9 @@ def evaluate(params):
     return test_acc, preds
 
 
+# ─────────────────────────────────────────────
 # MAIN
+# ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     params = np.random.uniform(0, 2 * np.pi,

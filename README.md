@@ -1,177 +1,33 @@
-## The Data
-
-The dataset contains .wav recordings of car and truck engines under two conditions —
-healthy (clean) and faulty (knocking). There are approximately 300 files per class,
-1199 files in total, making it a balanced 4-class classification problem.
-
-Classes:
-  - car_clean      — healthy car engine
-  - car_knocking   — car engine with a knocking fault
-  - truck_clean    — healthy truck engine
-  - truck_knocking — truck engine with a knocking fault
-
-The knocking sound is a percussive, low-frequency fault pattern caused by improper
-combustion timing. It is acoustically distinct enough that even raw spectral features
-capture it clearly, as confirmed during the PCA step.
-
-Raw .wav files are stored under data/ and are not tracked by git due to size.
-
----
-
-## The Pipeline
-
-The core idea is to convert audio files into fixed-length numerical vectors,
-compress and normalize them to fit into qubits, encode them into a quantum circuit,
-and train a variational classifier on top.
-
-Step 1 — Audio to Feature Vectors
-
-Each .wav file is loaded with librosa and converted into a 34-dimensional vector
-by extracting the following features:
-
-  - MFCCs (13 coefficients, mean + std over time) — 26 dims
-    Captures timbral texture. The knocking fault introduces harmonic distortion
-    that shows up clearly in the mid-range MFCC coefficients.
-
-  - Spectral centroid (mean + std) — 2 dims
-    The frequency center of mass. Trucks sit lower than cars here.
-
-  - Spectral rolloff (mean + std) — 2 dims
-    The frequency below which 85% of the energy lies.
-
-  - RMS energy (mean + std) — 2 dims
-    Overall loudness. Knock events produce sharp intermittent spikes.
-
-  - Zero-crossing rate (mean + std) — 2 dims
-    How often the signal crosses zero. Higher for transient/noisy content.
-
-One audio file becomes one row of 34 numbers. The full dataset becomes a
-matrix of shape (1199, 34). Code: src/audio_to_vectors.py
-Output saved to: vectors/features.npy, vectors/labels.npy
+train_all.py
 
 
-Step 2 — PCA and Normalization
-
-Two things need to happen before feeding vectors into a quantum circuit.
-
-First, dimensionality reduction. A quantum simulator tracks 2^n amplitudes in
-memory where n is the number of qubits. 34 qubits would require tracking 2^34
- amplitudes which is not feasible. PCA compresses 34 dimensions
-down to 8 while retaining 99.96% of the variance. The compression is this clean
-because the 34 features are highly correlated — they all respond to the same
-underlying physical events (knock or no knock), so most of the information
-collapses into very few directions. PC01 alone captures 88.5% of all variance.
-
-Second, normalization. Quantum encoding maps each number to a rotation angle on
-a qubit. This only makes sense in the range [0, pi]. A MinMaxScaler scales each
-of the 8 PCA components to this range.
-
-The PCA and scaler are fit only on training data and then applied to test data
-to avoid data leakage. Both fitted objects are saved to disk for use during
-inference on new audio files.
-
-Code: src/pca.py
-Output saved to: quantum_ready/X_train.npy, X_test.npy, y_train.npy, y_test.npy,
-                 quantum_ready/pca.pkl, quantum_ready/scaler.pkl
-The pkl files are packages created by joblib to be instantly able to load trained models 
-Train/test split: 80/20 stratified
-  Train: 959 samples (240/239/240/240 per class)
-  Test:  240 samples
+angle_encoding — takes one row from our data, the 8 numbers, and applies them as rotation angles on the 8 qubits. Each number just tilts its qubit by that angle on the Bloch sphere on the y axis.
 
 
-Step 3 — Qubit Encoding
+learnable_layers — this is the actual brain of the classifier. It goes through 3 rounds. In each round it applies a Rot gate on every qubit using the angles from our params array — these are the numbers that get updated during training(it is stored in our device ram . Then it connects all qubits in a ring using CNOT gates(quantum version of the not gate) so they can share information with each other. Repeating this 3 times lets the circuit learn increasingly complex patterns from the data(its not the three is the right time to do but for the testing I took three didn't test another if needed will test later).
 
-The 8-dimensional normalized vectors are encoded into 8-qubit quantum states
-using a ZZFeatureMap. This is the bridge between classical and quantum.
 
-The encoding works in two layers:
+vqc — the full circuit in one function. Calls angle encoding first to load the data, then runs it through the learnable layers, then reads the final orientation of qubit 0 and qubit 1 using PauliZ. Returns two numbers between -1 and +1.
 
-  Layer 1 — individual feature encoding
-    A Hadamard gate puts each qubit into superposition.
-    Then Rz(x[i]) encodes feature i as a phase rotation on qubit i.
 
-  Layer 2 — pairwise feature interactions
-    For each adjacent pair of qubits (i, i+1):
-      CNOT -> Rz((pi - x[i]) * (pi - x[i+1])) -> CNOT
-    This cross term encodes the product of two features into the quantum state,
-    allowing the circuit to detect correlated patterns like high RMS and high ZCR
-    occurring together, which is characteristic of a knocking engine.
+predict_one — takes the two numbers from vqc and converts them to a class. If both are positive it's car clean, positive then negative is car knocking, negative then positive is truck clean, both negative is truck knocking.
 
-The encoding was verified by checking state overlaps between classes.
-Overlap close to 0 means the quantum states are distinct (good).
-Overlap close to 1 means they are collapsed together (bad).
+ 
+predict_batch — runs predict_one on every sample in a set and collects all predictions into an array.
+accuracy — runs predict_batch and checks how many predictions match the true labels. Returns a percentage.
 
-Results:
-  car_clean vs car_knocking    — 0.019  (very distinct)
-  car_knocking vs truck_clean  — 0.011  (very distinct)
-  truck_clean vs truck_knocking — 0.150  (distinct)
-  car_clean vs truck_clean     — 0.386  (most similar, expected since both are healthy)
 
-The encoding preserves the real-world relationships between classes. Classes that
-sound more alike in the physical world are also closer in quantum state space.
+softmax — converts raw logit numbers into probabilities that sum to 1. Standard helper function used inside the loss.
 
-Note: the vectors in quantum_ready/ are plain numpy arrays. They become quantum
-states only when passed into the circuit at runtime. Nothing is saved after encoding —
-the quantum state exists only inside the simulator's memory during a forward pass.
+loss_one — takes one sample, runs it through the circuit, builds 4 logits based on how well the Z0 Z1(are just the qubit values of 0 and 1 from that ) output matches each class's expected sign pattern, converts to probabilities, and returns how wrong the prediction was. Higher loss means more wrong.
+batch_loss — runs loss_one on every sample in a batch and returns the average. This is the number we are trying to bring down during training.
 
-Code: src/encoding.py
-Mainly this id done to check whether the data vectors we have are valid for our classifier the probabilities summed upto one 
-we can se that the pauli z expressions all became 0 but not to worry it is expected later when w e ansatz it it will be restored and have normal value
+compute_gradient — for each of the 72 params it nudges that param up by π/2, runs the batch loss, nudges it down by π/2, runs the batch loss again, and computes the difference. That difference divided by 2 is the exact gradient for that param. This is the parameter shift rule — it tells us which direction to move each param to reduce the loss.
 
-Step 4 — Ansatz (in progress)
+train — the main loop. For each epoch it shuffles the training data, cuts it into batches of 32, computes the gradient for each batch, updates the params by subtracting learning rate times gradient, and prints the loss and accuracy after each epoch. Saves a checkpoint every 10 epochs so we don't lose progress(though it was given in main folder after training I moved them into training files).
+evaluate — runs the trained model on the test set and prints the full classification report and confusion matrix so we can see exactly which classes are being confused with which.
 
-Step 5 — Training and Evaluation (pending)
+train_binary.py
 
----
+Everything is the same except here we are trying to classify two states car_clean and car_knocking so only two states form the feature data we have we just took those two labels 
 
-## Current Status
-
-  Step 1  done — feature extraction verified, 1199 vectors of shape (34,)
-  Step 2  done — PCA and normalization verified, 99.96% variance retained
-  Step 3  done — encoding verified, classes well separated in quantum state space
-  Step 4  in progress
-  Step 5  pending
-
----
-
-## Future Plan
-
-- Complete the ansatz and verify the full circuit structure (Step 4)
-- Implement the training loop using parameter-shift gradient descent (Step 5)
-- Evaluate on the test set and record classification accuracy per class
-- Update this README with results once training is complete
-
----
-
-## Repository Structure
-
-  src/audio_to_vectors.py   — audio feature extraction
-  src/pca.py      — PCA and normalization
-  src/encoding.py           — qubit encoding verification
-
-  data/                       — raw .wav files
-  vectors/                    — intermediate feature vectors
-  quantum_ready/              — circuit-ready normalized vectors
-
----
-
-## Setup
-
-  pip install scikit-learn matplotlib librosa numpy  
-
-  python src/audio_to_vectors.py
-  python src/pca.py
-  python src/encoding.py
-
----
-
-## Stack
-
-  librosa       — audio feature extraction
-  scikit-learn  — PCA, normalization, train/test split, evaluation
-  PennyLane     — quantum circuit simulation
-  numpy         — numerical operations
-
----
-
-Author: Likhith Reddy Kaliki
