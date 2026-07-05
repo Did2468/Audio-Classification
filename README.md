@@ -31,3 +31,13 @@ train_binary.py
 
 Everything is the same except here we are trying to classify two states car_clean and car_knocking so only two states form the feature data we have we just took those two labels 
 
+
+
+
+
+
+update:-
+
+ran the trainings with different parameters.changing learning rate(lr),loss functions,different normalization(0 to pi and 0 to 2 pi) quantum ready has the (0 to pi) and quantum ready 2 has (0 to 2 pi)
+
+

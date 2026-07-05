@@ -7,8 +7,8 @@ import time
 N_QUBITS    = 8
 N_LAYERS    = 3
 N_EPOCHS    = 25
-LR          = 0.1
-BATCH_SIZE  = 64                        #changed batch size and learning rate
+LR          = 0.05
+BATCH_SIZE  = 16                        #changed batch size and learning rate
 RANDOM_SEED = 42
 VECTOR_DIR  = "./quantum_ready"
 # ─────────────────────────────────────────────
@@ -122,24 +122,24 @@ def softmax(logits):
 
 
 def loss_one(x, label, params):
-    """
-    Cross entropy loss for one sample.
+    z0, z1 = vqc(x, params)
 
-    Build 4 logits from Z0 and Z1 — one per class.
-    Each logit is highest when the circuit output matches
-    the expected sign pattern for that class:
+    # true signs for each class
+    # car_clean      -> (+1, +1)
+    # car_knocking   -> (+1, -1)
+    # truck_clean    -> (-1, +1)
+    # truck_knocking -> (-1, -1)
+    signs = [( 1,  1),
+             ( 1, -1),
+             (-1,  1),
+             (-1, -1)]
 
-        class 0 expects (+, +)  ->  logit =  z0 + z1
-        class 1 expects (+, -)  ->  logit =  z0 - z1
-        class 2 expects (-, +)  ->  logit = -z0 + z1
-        class 3 expects (-, -)  ->  logit = -z0 - z1
+    t0, t1 = signs[label]
 
-    Cross entropy penalises when the true class logit is not highest.
-    """
-    z0, z1  = vqc(x, params)
-    logits  = np.array([z0+z1, z0-z1, -z0+z1, -z0-z1])
-    probs   = softmax(logits)
-    return -np.log(probs[label] + 1e-9)
+    loss_q0 = max(0, 1 - t0 * z0)
+    loss_q1 = max(0, 1 - t1 * z1)
+
+    return loss_q0 + loss_q1
 
 
 def batch_loss(X_batch, y_batch, params):

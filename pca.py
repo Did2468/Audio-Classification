@@ -12,7 +12,7 @@ output_dir = "./quantum_ready"
 
 N_COMPONENTS = 8
 TEST_SIZE = 0.2
-RANDOM_SEED = 67
+RANDOM_SEED = 42
 
 
 os.makedirs(output_dir,exist_ok = True)
@@ -63,7 +63,7 @@ for i,(e,c) in enumerate(zip(explained,cumulative)):
 print(f" Total variance retained: {cumulative[-1]:.2%}")
 
 
-# NORMALIZATION part (zero to pi)
+# NORMALIZATION part (zero to  2 pi)
 scaler = MinMaxScaler(feature_range=(0,2 * np.pi))
 X_train_scaled = scaler.fit_transform(X_train_pca)
 X_test_scaled = scaler.fit_transform(X_test_pca)

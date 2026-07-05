@@ -7,8 +7,8 @@ import time
 N_QUBITS    = 8
 N_LAYERS    = 3
 N_EPOCHS    = 25
-LR          = 0.1
-BATCH_SIZE  = 64                        #changed batch size and learning rate
+LR          = 0.05
+BATCH_SIZE  = 16                        #changed batch size and learning rate
 RANDOM_SEED = 42
 VECTOR_DIR  = "./quantum_ready"
 # ─────────────────────────────────────────────
@@ -122,24 +122,25 @@ def softmax(logits):
 
 
 def loss_one(x, label, params):
-    """
-    Cross entropy loss for one sample.
+    z0, z1 = vqc(x, params)
 
-    Build 4 logits from Z0 and Z1 — one per class.
-    Each logit is highest when the circuit output matches
-    the expected sign pattern for that class:
+    # convert Z measurements to probabilities in [0,1]
+    p0 = (1 - z0) / 2    # prob that qubit 0 is in south (|1>)
+    p1 = (1 - z1) / 2    # prob that qubit 1 is in south (|1>)
 
-        class 0 expects (+, +)  ->  logit =  z0 + z1
-        class 1 expects (+, -)  ->  logit =  z0 - z1
-        class 2 expects (-, +)  ->  logit = -z0 + z1
-        class 3 expects (-, -)  ->  logit = -z0 - z1
+    # true binary targets for each qubit based on class
+    # class 0 car_clean      -> b0=0, b1=0  (both north)
+    # class 1 car_knocking   -> b0=0, b1=1  (north, south)
+    # class 2 truck_clean    -> b0=1, b1=0  (south, north)
+    # class 3 truck_knocking -> b0=1, b1=1  (both south)
+    b0 = 1 if label >= 2 else 0
+    b1 = 1 if label % 2 == 1 else 0
 
-    Cross entropy penalises when the true class logit is not highest.
-    """
-    z0, z1  = vqc(x, params)
-    logits  = np.array([z0+z1, z0-z1, -z0+z1, -z0-z1])
-    probs   = softmax(logits)
-    return -np.log(probs[label] + 1e-9)
+    # binary cross entropy for each qubit independently
+    loss_q0 = -(b0 * np.log(p0 + 1e-9) + (1-b0) * np.log(1-p0 + 1e-9))
+    loss_q1 = -(b1 * np.log(p1 + 1e-9) + (1-b1) * np.log(1-p1 + 1e-9))
+
+    return loss_q0 + loss_q1
 
 
 def batch_loss(X_batch, y_batch, params):
